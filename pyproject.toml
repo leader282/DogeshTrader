@@ -1,0 +1,126 @@
+[project]
+name = "dogeshtrader"
+version = "0.1.0"
+description = "Local-first, modular algorithmic trading framework for Zerodha Kite Connect."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "DogeshTrader" }]
+keywords = ["trading", "zerodha", "kite", "backtest", "algorithmic-trading"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "License :: OSI Approved :: MIT License",
+]
+
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "typer>=0.12",
+    "rich>=13.7",
+    "structlog>=24.1",
+    "pyyaml>=6.0.1",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "httpx>=0.27",
+    "kiteconnect>=5.0.1",
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "pyarrow>=15.0",
+    "duckdb>=1.0",
+    "python-dateutil>=2.9",
+    "pytz>=2024.1",
+    "tenacity>=8.2",
+    "jinja2>=3.1",
+    "matplotlib>=3.8",
+    "tabulate>=0.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "types-pyyaml>=6.0",
+    "types-requests>=2.31",
+    "freezegun>=1.5",
+]
+
+[project.scripts]
+dogesh = "dogeshtrader.cli:app"
+
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["dogeshtrader"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = [".tools", "data", "reports_out"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "I", "B", "UP", "N", "SIM", "RUF",
+    "C4", "DTZ", "PIE", "PL", "TID", "TCH",
+]
+ignore = [
+    "PLR0913",  # too many args
+    "PLR2004",  # magic value
+    "PLR0915",  # too many statements
+    "PLR0912",  # too many branches
+    "PLR0911",  # too many returns
+    "N818",     # exception naming
+    "E501",     # line length handled by formatter
+    "PLC0415",  # imports not at top-level (we use deferred imports intentionally)
+    "TC001",    # type-checking-block imports
+    "TC002",    # type-checking-block imports
+    "TC003",    # type-checking-block imports
+    "UP037",    # quoted annotation (sometimes required for forward refs)
+    "DTZ005",   # naive datetime.now (we use local IST timestamps deliberately)
+    "DTZ001",   # naive datetime() (same)
+    "DTZ006",   # naive datetime.utcnow
+    "B904",     # raise from chain - we sometimes wrap with logging
+    "SIM108",   # ternary over if/else - readability preference
+    "RUF012",   # mutable class default (dataclass quirk)
+    "RUF022",   # __all__ sort order (we group by section)
+    "RUF059",   # unused unpacked variable (intentional in equity assignment)
+    "UP042",    # str+Enum (intentional, gives string equality)
+    "B027",     # empty abstract methods (we provide default no-op hooks)
+    "E741",     # ambiguous var name (we use l/r in pair-style reconciliation)
+    "SIM102",   # nested if (readability)
+    "SIM103",   # return condition directly (readability)
+    "SIM105",   # try/except/pass vs contextlib.suppress (style)
+    "PLW0603",  # global statement (used in logging_config exactly once)
+    "C408",     # dict() literal style (we sometimes want kwargs ergonomics)
+    "DTZ007",   # strptime without %z (we deliberately parse naive IST timestamps)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["PLR2004", "S101", "PLR0915"]
+"dogeshtrader/cli.py" = ["B008"]  # Typer relies on defaults
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+warn_unused_ignores = true
+warn_redundant_casts = true
+ignore_missing_imports = true
+exclude = ["build/", "dist/", ".tools/"]

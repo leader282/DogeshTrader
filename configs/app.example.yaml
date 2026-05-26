@@ -1,0 +1,44 @@
+# DogeshTrader application config.
+# Copy this to configs/app.yaml and edit. NEVER commit configs/app.yaml if it
+# contains anything live-sensitive.
+app_name: DogeshTrader
+mode: PAPER                   # BACKTEST | PAPER | DRY_RUN | LIVE
+timezone: Asia/Kolkata
+
+data_dir: ./data
+db_path: ./data/dogeshtrader.sqlite
+reports_dir: ./data/reports
+
+# Local FastAPI callback used to capture Kite request_token after manual login.
+redirect_url: http://127.0.0.1:8000/kite/callback
+
+# Optional Kite postback (webhook) URL. Leave null for individual developer use.
+postback_url: null
+
+# MUST be false unless the operator has explicitly enabled live trading AND
+# the CLI is invoked with --i-understand-this-places-real-orders.
+live_trading_enabled: false
+
+# Identifier prefixed to every order tag. Helps reconcile DogeshTrader orders
+# on the Kite dashboard.
+order_tag_prefix: dogesh_
+
+# Quote subscription mode for live feeds. ltp | quote | full
+default_quote_mode: quote
+
+# Order rate limiter, kept conservatively below Zerodha/NSE limits.
+# Zerodha allows up to 10 orders/second per user. We cap well below.
+order_rate_per_second: 5
+order_rate_burst: 8
+
+# Default brokerage / costs model used in backtests if a strategy config does
+# not override it.
+costs:
+  model: india_equity_simple
+  brokerage_per_order: 20.0
+  bps_fallback: 3.0
+
+# Slippage defaults for backtest / paper modes.
+slippage:
+  model: fixed_bps
+  bps: 2.0

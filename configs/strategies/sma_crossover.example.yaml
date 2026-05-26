@@ -1,0 +1,34 @@
+# SMA crossover strategy config.
+strategy: sample_sma_crossover
+strategy_id: sma_x_demo_01    # MUST be set, included in order tag.
+
+# Cash allocated to this strategy in PAPER / BACKTEST. Live mode ignores this
+# and uses real broker margins instead.
+initial_cash: 200000
+
+# Instruments to trade. The backtest engine needs candles for each of these.
+instruments:
+  - exchange: NSE
+    tradingsymbol: INFY
+  - exchange: NSE
+    tradingsymbol: RELIANCE
+
+# Candle interval the strategy expects. Must match the historical download
+# you have on disk for backtests.
+interval: 5minute
+
+# Strategy parameters.
+params:
+  fast: 9
+  slow: 21
+  quantity: 1            # Lot-size aware sizing is handled by the risk engine.
+  product: MIS           # CNC | MIS | NRML | MTF
+  order_type: MARKET     # MARKET | LIMIT | SL | SL-M
+  market_protection_pct: 1.0
+  exit_on_session_end: true
+
+# Backtest-specific knobs.
+backtest:
+  from: "2024-01-01"
+  to: "2024-06-30"
+  warmup_candles: 25

@@ -1,0 +1,90 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# Tools
+.tools/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Secrets - NEVER COMMIT
+.env
+.env.*
+!.env.example
+.envrc
+secrets.yaml
+secrets.yml
+*.secret
+*.secrets.json
+*.pem
+*.key
+*.p12
+*.pfx
+kite_token.json
+kite_token*.json
+token.json
+access_token*
+
+# Local operator / strategy configuration - commit examples only
+configs/*.yaml
+configs/*.yml
+configs/strategies/*.yaml
+configs/strategies/*.yml
+!configs/*.example.yaml
+!configs/*.example.yml
+!configs/strategies/*.example.yaml
+!configs/strategies/*.example.yml
+
+# Local data and runtime artifacts
+data/
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.duckdb
+*.parquet
+logs/
+*.log
+
+# Reports
+reports_out/
+backtest_results/
+*.html
+!dogeshtrader/reports/templates/*.html
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# uv / pip
+uv.lock
