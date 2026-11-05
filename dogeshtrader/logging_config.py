@@ -43,17 +43,14 @@ def configure_logging(
         timestamper,
     ]
 
+    renderers: list[Any]
     if fmt == "json":
-        renderer: Any = structlog.processors.JSONRenderer()
+        renderers = [structlog.processors.dict_tracebacks, structlog.processors.JSONRenderer()]
     else:
-        renderer = structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())
+        renderers = [structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())]
 
     structlog.configure(
-        processors=[
-            *shared_processors,
-            structlog.processors.format_exc_info,
-            renderer,
-        ],
+        processors=[*shared_processors, *renderers],
         wrapper_class=structlog.make_filtering_bound_logger(_lvl(level_name)),
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),

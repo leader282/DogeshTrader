@@ -350,6 +350,37 @@ class StrategyContext(_Base):
     def last_price(self, instrument: Instrument, default: float | None = None) -> float | None:
         return self.latest_prices.get(instrument.key, default)
 
+    def record_signal(
+        self,
+        instrument: Instrument | str,
+        *,
+        side: str,
+        reason: str,
+        evidence: dict[str, Any] | None = None,
+    ) -> None:
+        """Report why the strategy acted (or would have) for the operator page.
+
+        Signals are display-only. They never become orders; only returned
+        :class:`OrderIntent` objects do.
+        """
+        key = instrument.key if isinstance(instrument, Instrument) else instrument
+        self.extra.setdefault(_SIGNALS_KEY, []).append(
+            {
+                "timestamp": self.timestamp.isoformat(),
+                "instrument": key,
+                "side": side,
+                "reason": reason,
+                "evidence": dict(evidence or {}),
+            }
+        )
+
+    def drain_signals(self) -> list[dict[str, Any]]:
+        pending = self.extra.pop(_SIGNALS_KEY, None) or []
+        return [item for item in pending if isinstance(item, dict)]
+
+
+_SIGNALS_KEY = "_signals"
+
 
 __all__ = [
     "Candle",

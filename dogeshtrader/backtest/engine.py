@@ -35,8 +35,9 @@ from dogeshtrader.backtest.slippage import SlippageModel
 from dogeshtrader.brokers.paper_broker import PaperBroker, PaperConfig
 from dogeshtrader.config import AppConfig, RiskConfig, StrategyConfig
 from dogeshtrader.constants import RUN_ID_PREFIX
-from dogeshtrader.core.clock import FrozenClock
-from dogeshtrader.core.enums import Mode, OrderStatus, Side
+from dogeshtrader.core.clock import FrozenClock, session_date
+from dogeshtrader.core.enums import Mode, OrderStatus, OrderType, Side
+from dogeshtrader.core.interfaces import IBroker
 from dogeshtrader.core.models import (
     Candle,
     Fill,
@@ -50,6 +51,9 @@ from dogeshtrader.execution.idempotency import IdempotencyGuard
 from dogeshtrader.execution.order_manager import OrderManager
 from dogeshtrader.execution.order_router import OrderRouter
 from dogeshtrader.logging_config import get_logger
+from dogeshtrader.operator.state import OperatorBook, RunStatus, publish_run, state_path
+from dogeshtrader.risk.flatten import flatten_intents
+from dogeshtrader.risk.kill_switch import KillSwitch, kill_switch_path
 from dogeshtrader.risk.risk_engine import RiskEngine
 from dogeshtrader.storage import (
     AuditRepository,
@@ -146,10 +150,14 @@ class BacktestEngine:
 
         # Risk engine - in backtest mode we disable session-hours enforcement
         # and let strategy-driven flatten logic handle it via timestamps.
+        self.kill_switch = KillSwitch(kill_switch_path(app_cfg.data_dir))
+        self.operator = OperatorBook(state_path(app_cfg.data_dir))
         self.risk = RiskEngine(
             risk_cfg,
             tag_prefix=app_cfg.order_tag_prefix,
             enforce_market_hours=False,
+            kill_switch=self.kill_switch,
+            market_interval=strategy_cfg.interval,
         )
 
         self.order_mgr = OrderManager()
@@ -217,6 +225,7 @@ class BacktestEngine:
         # Track open lots per instrument for round-trip accounting (FIFO).
         open_lots: dict[str, list[_Lot]] = defaultdict(list)
         first_seen: dict[str, datetime] = {}
+        last_candle: dict[str, Candle] = {}
 
         for instrument, candle in self.candles_provider:
             key = instrument.key
@@ -230,8 +239,16 @@ class BacktestEngine:
             else:
                 self.clock.advance_to(candle.timestamp)
 
-            # 1. Try to fill any orders pending from prior bar against this bar's OHLC.
-            fills_now = self._fill_pending(
+            # 1. Fill orders pending from the prior bar. Orders still pending at a
+            # session boundary settle against the prior close instead.
+            prev = last_candle.get(key)
+            last_candle[key] = candle
+            fills_now: list[Fill] = []
+            if prev is not None and session_date(prev.timestamp) != session_date(candle.timestamp):
+                fills_now = self._settle_at_session_close(
+                    pending_orders, key, prev, positions, trades, open_lots
+                )
+            fills_now += self._fill_pending(
                 pending_orders[key], candle, positions, trades, open_lots
             )
             for fill in fills_now:
@@ -278,24 +295,30 @@ class BacktestEngine:
             ctx.timestamp = candle.timestamp
             ctx.extra["_current_instrument"] = instrument_by_key[key]
 
-            # 3. Strategy decides.
-            try:
-                intents = self.strategy.on_candle(ctx, candle)
-            except Exception as e:
-                _log.error("strategy_error", error=str(e))
-                self.audit_repo.log(
-                    "engine", "strategy_error", run_id=self.run_id, payload={"error": str(e)}
-                )
-                intents = []
+            equity_now = _mark_equity(cash, positions, latest_prices)
+            self.risk.observe_equity(candle.timestamp, equity_now)
+            self.risk.update_realised_pnl(sum(p.realised_pnl for p in positions.values()))
+            self.risk.note_candle(key, candle)
+
+            # 3. Strategy decides. A kill switch replaces new entries with a flatten.
+            if self.kill_switch.is_engaged():
+                intents = flatten_intents(ctx)
+            else:
+                try:
+                    intents = self.strategy.on_candle(ctx, candle)
+                except Exception as e:
+                    _log.error("strategy_error", error=str(e))
+                    self.audit_repo.log(
+                        "engine", "strategy_error", run_id=self.run_id, payload={"error": str(e)}
+                    )
+                    intents = []
 
             # 4. Risk + idempotency + record orders.
             self._book_intents(intents, ctx, pending_orders)
+            self._publish(ctx, equity_now)
 
             # 5. Equity sample.
-            equity = cash + sum(
-                (positions[k].quantity * latest_prices.get(k, positions[k].avg_price))
-                for k in positions
-            )
+            equity = equity_now
             equity_curve.append((candle.timestamp, equity))
             if any(p.quantity != 0 for p in positions.values()):
                 bars_in_market += 1
@@ -374,6 +397,10 @@ class BacktestEngine:
             )
             equity_curve[-1] = (ts, extra_equity)
 
+        final_equity = equity_curve[-1][1] if equity_curve else cash
+        ctx.cash = cash
+        self._publish(ctx, final_equity, status="stopped", force=True)
+
         metrics = compute_metrics(
             equity_curve=equity_curve,
             trades=trades,
@@ -420,6 +447,29 @@ class BacktestEngine:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _publish(
+        self,
+        ctx: StrategyContext,
+        equity: float,
+        *,
+        status: RunStatus = "running",
+        force: bool = False,
+    ) -> None:
+        try:
+            publish_run(
+                self.operator,
+                ctx,
+                run_id=self.run_id,
+                mode=Mode.BACKTEST.value,
+                equity=equity,
+                risk=self.risk,
+                kill_switch=self.kill_switch,
+                status=status,
+                force=force,
+            )
+        except Exception as e:
+            _log.warning("operator_snapshot_failed", error=str(e))
 
     def _book_intents(
         self,
@@ -481,6 +531,30 @@ class BacktestEngine:
                     placed_ts=ctx.timestamp,
                 )
             )
+
+    def _settle_at_session_close(
+        self,
+        pending_orders: dict[str, list[_PendingOrder]],
+        key: str,
+        last_bar: Candle,
+        positions: dict[str, Position],
+        trades: list[Trade],
+        open_lots: dict[str, list[_Lot]],
+    ) -> list[Fill]:
+        """MARKET orders fill at the session's last close; day orders expire."""
+        market = [p for p in pending_orders[key] if p.request.order_type == OrderType.MARKET]
+        expired = [p for p in pending_orders[key] if p not in market and not p.filled]
+        for p in expired:
+            self.audit_repo.log(
+                "engine",
+                "order_expired_at_session_end",
+                run_id=self.run_id,
+                payload={"order_id": p.order_id, "instrument": key},
+            )
+        pending_orders[key] = market
+        close = last_bar.close
+        settle_bar = last_bar.model_copy(update={"open": close, "high": close, "low": close})
+        return self._fill_pending(market, settle_bar, positions, trades, open_lots)
 
     def _fill_pending(
         self,
@@ -618,7 +692,18 @@ class _Lot:
     fees_remaining: float = 0.0
 
 
-class _NoOpRouterBroker:
+def _mark_equity(
+    cash: float,
+    positions: dict[str, Position],
+    latest_prices: dict[str, float],
+) -> float:
+    return cash + sum(
+        positions[key].quantity * latest_prices.get(key, positions[key].avg_price)
+        for key in positions
+    )
+
+
+class _NoOpRouterBroker(IBroker):
     """A do-nothing broker used by the OrderRouter; the backtest engine handles
     fills via its own pending order book to gain access to next-candle fills.
     """

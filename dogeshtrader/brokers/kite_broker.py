@@ -226,23 +226,23 @@ class KiteBroker(BaseBroker):
             raw = self.kite.positions()
         except Exception as e:
             raise BrokerError(f"positions failed: {e}") from e
+        # Kite's "day" bucket is today's activity only; "net" is what is actually held.
         out: dict[str, Position] = {}
-        for bucket in ("net", "day"):
-            for p in (raw or {}).get(bucket, []) or []:
-                inst = Instrument(
-                    exchange=p.get("exchange"),
-                    tradingsymbol=p.get("tradingsymbol"),
-                    instrument_token=p.get("instrument_token"),
-                    lot_size=int(p.get("multiplier") or 1),
-                )
-                out[inst.key] = Position(
-                    instrument=inst,
-                    quantity=int(p.get("quantity") or 0),
-                    avg_price=float(p.get("average_price") or 0.0),
-                    realised_pnl=float(p.get("realised") or 0.0),
-                    unrealised_pnl=float(p.get("unrealised") or 0.0),
-                    last_price=float(p.get("last_price") or 0.0),
-                )
+        for p in (raw or {}).get("net", []) or []:
+            inst = Instrument(
+                exchange=p.get("exchange"),
+                tradingsymbol=p.get("tradingsymbol"),
+                instrument_token=p.get("instrument_token"),
+                lot_size=int(p.get("multiplier") or 1),
+            )
+            out[inst.key] = Position(
+                instrument=inst,
+                quantity=int(p.get("quantity") or 0),
+                avg_price=float(p.get("average_price") or 0.0),
+                realised_pnl=float(p.get("realised") or 0.0),
+                unrealised_pnl=float(p.get("unrealised") or 0.0),
+                last_price=float(p.get("last_price") or 0.0),
+            )
         return out
 
     def holdings(self) -> dict[str, Position]:

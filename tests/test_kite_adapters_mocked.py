@@ -181,9 +181,7 @@ def test_instruments_adapter_normalizes(stub_kite: _StubKite) -> None:
 
 def test_market_data_historical_emits_candles(stub_kite: _StubKite) -> None:
     adapter = KiteMarketDataAdapter(stub_kite)
-    instrument = Instrument(
-        exchange=Exchange.NSE, tradingsymbol="INFY", instrument_token=408065
-    )
+    instrument = Instrument(exchange=Exchange.NSE, tradingsymbol="INFY", instrument_token=408065)
     candles = list(
         adapter.historical(
             instrument,

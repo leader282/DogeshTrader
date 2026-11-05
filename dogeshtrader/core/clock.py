@@ -10,15 +10,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timezone
+from zoneinfo import ZoneInfo
 
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:  # pragma: no cover - py<3.9 only
-    ZoneInfo = None  # type: ignore[assignment]
-
-
-IST = ZoneInfo("Asia/Kolkata") if ZoneInfo else timezone(timedelta(hours=5, minutes=30))
+IST = ZoneInfo("Asia/Kolkata")
 
 DEFAULT_SESSION_START = time(9, 15)
 DEFAULT_SESSION_END = time(15, 30)
@@ -96,6 +91,16 @@ def is_trading_day(d: date, holidays: set[date] | None = None) -> bool:
     return True
 
 
+def session_date(ts: datetime) -> date:
+    """Trading date of ``ts`` in IST.
+
+    Naive timestamps are treated as already-local IST wall time, matching the
+    rest of the clock helpers.
+    """
+    local = ts.astimezone(IST) if ts.tzinfo else ts.replace(tzinfo=IST)
+    return local.date()
+
+
 def minutes_until_close(
     ts: datetime,
     session_end: time = DEFAULT_SESSION_END,
@@ -118,4 +123,5 @@ __all__ = [
     "is_market_open",
     "is_trading_day",
     "minutes_until_close",
+    "session_date",
 ]

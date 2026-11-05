@@ -16,10 +16,11 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from dogeshtrader.core.enums import Mode
+from dogeshtrader.core.errors import ConfigError
 
 # ---------------------------------------------------------------------------
 # Application settings (env + YAML)
@@ -112,6 +113,15 @@ class RiskConfig(BaseModel):
     max_consecutive_rejections: int = 3
     data_feed_disconnect_grace_seconds: int = 30
     max_orders_per_minute: int = 60
+    # Percent-of-equity limits from the intraday policy. Zero disables a check
+    # so existing configs keep the absolute rupee caps above.
+    risk_per_trade_pct: float = 0.0
+    daily_loss_pct: float = 0.0
+    monthly_loss_pct: float = 0.0
+    max_concurrent_positions: int = 0
+    max_trades_per_day: int = 0
+    block_entries_on_bad_data: bool = False
+    stale_candle_multiple: float = 2.0
 
     @field_validator("session_start", "session_end", mode="before")
     @classmethod
@@ -133,6 +143,17 @@ class InstrumentRef(BaseModel):
     tradingsymbol: str
 
 
+class ResearchWindow(BaseModel):
+    """Out-of-sample split for ``dogesh research``.
+
+    ``split`` is the first out-of-sample session (YYYY-MM-DD). Bars before
+    that date are the in-sample window.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    split: str
+
+
 class BacktestWindow(BaseModel):
     model_config = ConfigDict(extra="forbid")
     from_: str = Field(alias="from")
@@ -150,6 +171,7 @@ class StrategyConfig(BaseModel):
     interval: str = "5minute"
     params: dict[str, Any] = Field(default_factory=dict)
     backtest: BacktestWindow | None = None
+    research: ResearchWindow | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -160,35 +182,42 @@ class StrategyConfig(BaseModel):
 def _read_yaml(path: str | Path) -> dict[str, Any]:
     p = Path(path)
     if not p.exists():
-        raise FileNotFoundError(f"config not found: {p}")
-    with p.open("r", encoding="utf-8") as fh:
-        loaded = yaml.safe_load(fh) or {}
+        raise ConfigError(f"config not found: {p}")
+    try:
+        with p.open("r", encoding="utf-8") as fh:
+            loaded = yaml.safe_load(fh) or {}
+    except yaml.YAMLError as e:
+        raise ConfigError(f"config is not valid YAML: {p}: {e}") from e
     if not isinstance(loaded, dict):
-        raise ValueError(f"config root must be a mapping: {p}")
+        raise ConfigError(f"config root must be a mapping: {p}")
     return loaded
+
+
+def _load[M: BaseModel](model: type[M], path: str | Path) -> M:
+    data = _read_yaml(path)
+    try:
+        return model(**data)
+    except ValidationError as e:
+        raise ConfigError(f"invalid {model.__name__} in {path}: {e}") from e
 
 
 def load_app_config(path: str | Path | None = None) -> AppConfig:
     settings = AppSettings()
-    config_path = Path(
-        path or os.environ.get("DOGESHTRADER_CONFIG") or settings.dogeshtrader_config
+    return _load(
+        AppConfig, path or os.environ.get("DOGESHTRADER_CONFIG") or settings.dogeshtrader_config
     )
-    data = _read_yaml(config_path)
-    return AppConfig(**data)
 
 
 def load_risk_config(path: str | Path | None = None) -> RiskConfig:
     settings = AppSettings()
-    config_path = Path(
-        path or os.environ.get("DOGESHTRADER_RISK_CONFIG") or settings.dogeshtrader_risk_config
+    return _load(
+        RiskConfig,
+        path or os.environ.get("DOGESHTRADER_RISK_CONFIG") or settings.dogeshtrader_risk_config,
     )
-    data = _read_yaml(config_path)
-    return RiskConfig(**data)
 
 
 def load_strategy_config(path: str | Path) -> StrategyConfig:
-    data = _read_yaml(path)
-    return StrategyConfig(**data)
+    return _load(StrategyConfig, path)
 
 
 def get_settings() -> AppSettings:
@@ -201,6 +230,7 @@ __all__ = [
     "BacktestWindow",
     "CostsConfig",
     "InstrumentRef",
+    "ResearchWindow",
     "RiskConfig",
     "SlippageConfig",
     "StrategyConfig",

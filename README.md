@@ -46,27 +46,38 @@ and the framework refuses to route a single order.
 
 ```
 dogeshtrader/
-  pyproject.toml             # uv/pip metadata
+  pyproject.toml             # metadata, tool config, strategy entry points
+  Makefile                   # make check = lint + typecheck + tests with coverage
   configs/                   # example YAML configs
   dogeshtrader/
-    cli.py                   # Typer entry point (`dogesh`)
+    runtime.py               # composition root: every run mode is wired here
+    cli/                     # thin Typer layer (`dogesh`); no wiring logic
     config.py                # AppConfig + RiskConfig + StrategyConfig
-    constants.py             # framework-wide constants
-    logging_config.py        # structlog setup
-    core/                    # domain types, interfaces, enums, clock
-    storage/                 # SQLite schema + repositories
-    strategy/                # base strategy + sample strategies + registry
-    risk/                    # risk engine + sizing + circuit breakers
-    execution/               # router, order manager, rate limiter, idempotency
+    core/                    # domain types, interfaces, enums, clock, errors
+    strategy/                # base class, registry/plugins, signals, strategies
+    risk/                    # risk engine, sizing, breakers, kill switch, flatten
+    execution/               # router, order manager, rate limiter, reconciliation
     brokers/                 # paper, dry-run, kite brokers
     backtest/                # engine, fills, slippage, costs, metrics, report
-    simulation/              # live-paper engine + latency model
+    research/                # in-sample / out-of-sample promotion gate
+    simulation/              # paper/live event loop
+    operator/                # state snapshot + local dashboard
+    data/                    # instrument master, candle/tick stores, quality
+    storage/                 # SQLite schema + repositories
     auth/                    # Kite auth, callback server, token store
     adapters/kite/           # KiteClient + sub-adapters
-    data/                    # instrument master, candle/tick stores, downloader
     reports/                 # HTML render + plots
-  tests/                     # pytest suite
+  tests/                     # pytest suite (CLI, engines, risk, data, adapters)
 ```
+
+### How the pieces fit
+
+The CLI parses flags and prints. `runtime.Workspace` opens config, storage and
+the operator files for one data directory; `runtime.StrategyRun` builds the
+engine for a mode and runs a workflow (`run_backtest`, `run_research`,
+`replay_paper`, `dry_run`, `live_engine`). Tests and any future service entry
+point (scheduler, API, notebook) use the same two classes, so adding a mode or
+a broker is a change in one file.
 
 ## Prerequisites
 
@@ -104,12 +115,10 @@ The framework exposes itself as the `dogesh` console script after install.
    Then edit `.env` and fill in `KITE_API_KEY` and `KITE_API_SECRET`.
    **Never commit the real `.env`.**
 
-2. Inspect `configs/app.example.yaml` and `configs/risk.example.yaml`. Copy
-   them to `configs/app.yaml` / `configs/risk.yaml` if you want to keep your
-   examples pristine, then point the framework at your copies with
-   `DOGESHTRADER_CONFIG=configs/app.yaml` (and similarly for risk).
-   Non-example YAML under `configs/` is gitignored on purpose; commit only
-   sanitized `*.example.yaml` files.
+2. Keep `configs/app.yaml` and `configs/risk.yaml` on this machine and point
+   the framework at them with `DOGESHTRADER_CONFIG` and
+   `DOGESHTRADER_RISK_CONFIG`. The whole `configs/` directory is gitignored.
+   Nothing in it is pushed.
 
 3. Make sure the Kite app's *redirect URL* in the Kite developer console
    matches `redirect_url` in your YAML config (default
@@ -177,8 +186,7 @@ dogesh data historical \
 
 # Validate a strategy without placing anything:
 dogesh dry-run \
-  --strategy sample_sma_crossover \
-  --config configs/strategies/sma_crossover.example.yaml
+  --config configs/strategies/sma_crossover.yaml
 ```
 
 `dry-run` runs the strategy against the most recent stored candles, passes
@@ -198,8 +206,7 @@ dogesh data historical --exchange NSE --symbol RELIANCE \
 
 # 2. Run the backtest:
 dogesh backtest \
-  --strategy sample_sma_crossover \
-  --config configs/strategies/sma_crossover.example.yaml
+  --config configs/strategies/sma_crossover.yaml
 ```
 
 Outputs land in `data/reports/<run_id>/`:
@@ -214,6 +221,28 @@ Outputs land in `data/reports/<run_id>/`:
 `dogesh report` lists recent runs; `dogesh report --run-id <id>` shows
 details.
 
+Every run command accepts `--app-config` and `--risk-config` (defaulting to
+`DOGESHTRADER_CONFIG` / `DOGESHTRADER_RISK_CONFIG`, then the example files).
+The strategy comes from the `strategy:` key in the config; `--strategy`
+overrides it. `dogesh strategies` lists everything installed.
+
+Backtests fill market orders on the next bar's open. An order still pending
+when the session ends fills at that session's last close, and limit/stop
+orders expire at the end of the day, so intraday positions are never carried
+overnight.
+
+## Research gate
+
+```bash
+dogesh research --config configs/strategies/intraday_orb_vwap.yaml
+```
+
+Runs the backtest, splits the equity curve and trades at `research.split`
+(or `--split YYYY-MM-DD`), and scores both windows after costs. It exits 1
+unless the out-of-sample window has closed trades, positive expectancy, and
+ends above where it started. Treat a pass as permission to paper trade, not
+as a forecast.
+
 ## Run paper mode
 
 Paper mode keeps a `PaperBroker` in memory and feeds it either real ticks
@@ -223,13 +252,11 @@ are placed at the broker**.
 ```bash
 # Live ticks (requires a fresh access token):
 dogesh paper \
-  --strategy sample_sma_crossover \
-  --config configs/strategies/sma_crossover.example.yaml
+  --config configs/strategies/sma_crossover.yaml
 
 # Replay historical candles (offline, no token required):
 dogesh paper \
-  --strategy sample_sma_crossover \
-  --config configs/strategies/sma_crossover.example.yaml \
+  --config configs/strategies/sma_crossover.yaml \
   --replay-historical
 ```
 
@@ -249,8 +276,7 @@ testing.
 # 3. Run live:
 DOGESHTRADER_CONFIG=configs/app.yaml \
 dogesh live \
-  --strategy sample_sma_crossover \
-  --config configs/strategies/sma_crossover.example.yaml \
+  --config configs/strategies/sma_crossover.yaml \
   --i-understand-this-places-real-orders
 ```
 
@@ -267,7 +293,37 @@ dogesh reconcile
 
 Reconciliation rows land in the `reconciliation` SQLite table; the CLI also
 prints a summary. Any drift (status mismatch, missing-on-broker,
-missing-locally) is recorded for later investigation.
+missing-locally) is recorded for later investigation. If the broker holds a
+position that differs from the last run snapshot, `reconcile` engages the
+kill switch and exits 2. A LIVE engine runs the same check at start and
+periodically while running.
+
+## Operator controls
+
+```bash
+dogesh kill --reason "news event"   # block new entries; running engines flatten
+dogesh resume                       # clear the kill switch
+dogesh dashboard --port 8765        # local positions / signals / P&L page
+```
+
+The kill switch is a file (`<data_dir>/KILL`), so it works across processes
+and survives restarts. Exits are always allowed so open positions can close.
+
+The dashboard is read-only and binds to 127.0.0.1. Run it in a second
+terminal next to `paper` or `live`. It updates every two seconds without
+reloading and shows:
+
+- engine health: running, finished, or **stale** when the engine has not
+  updated for `--stale-after` seconds (default 10). Engines send a heartbeat
+  even when no ticks arrive, so a stale banner means the process stopped or
+  hung, not that the market is quiet
+- kill-switch state and reason
+- equity, day and month P&L, trades today, tripped breakers
+- open positions, recent strategy signals with their evidence, and
+  instruments blocked for bad data
+
+It reads `<data_dir>/operator/state.json`, which every run mode writes.
+`GET /api/state` returns the same data as JSON.
 
 ## Writing a new strategy
 
@@ -330,12 +386,66 @@ backtest:
 Run it:
 
 ```bash
-dogesh backtest --strategy my_breakout --config configs/strategies/my_breakout.yaml
+dogesh backtest --config configs/strategies/my_breakout.yaml
 ```
 
-Keep real strategy configs local. If you want to publish an example, remove
-live instruments, sizing, thresholds and dates first, then save it as
-`*.example.yaml`.
+### Typed parameters
+
+Give the class a `Params` model and the YAML `params` block is validated when
+the strategy is built. A typo or wrong type fails at load time instead of
+silently falling back to a default mid-session:
+
+```python
+from pydantic import BaseModel
+
+
+class BreakoutParams(BaseModel, extra="forbid"):
+    quantity: int = 1
+    product: str = "MIS"
+    threshold_pct: float = 2.0
+
+
+@register("my_breakout")
+class MyBreakout(Strategy):
+    Params = BreakoutParams
+```
+
+`self.settings` holds the validated model; `self.params` / `get_param` keep
+working for untyped strategies.
+
+### Explaining decisions on the dashboard
+
+Call `ctx.record_signal` when the strategy acts, or decides not to, and the
+evidence shows up on the operator page. Signals are display-only; only
+returned `OrderIntent` objects become orders.
+
+```python
+ctx.record_signal(inst, side="BUY", reason="breakout", evidence={"rvol": 2.1, "vwap": 101.4})
+```
+
+### Shipping a strategy as a plugin
+
+Strategies do not have to live in this repository. Any installed package can
+publish one through an entry point, and `dogesh strategies` picks it up:
+
+```toml
+# your package's pyproject.toml
+[project.entry-points."dogeshtrader.strategies"]
+my_breakout = "my_pkg.breakout:MyBreakout"
+```
+
+`pip install -e path/to/my_pkg`, then reference `strategy: my_breakout` in a
+config. The built-in strategies are registered the same way.
+
+Put each run in `configs/strategies/<name>.yaml`. Several files can point at
+the same `strategy:` value when you want another universe or date window.
+Those files are gitignored.
+
+A strategy module you add under `dogeshtrader/strategy/` is gitignored too,
+apart from the two samples and the shared signal helpers. Drop the file in
+and `dogesh strategies` picks it up locally. It is not part of the published
+package. Add the filename to the allowlist in `.gitignore` only when a
+strategy is meant to be public.
 
 Strategies must not import any broker, kite client, FastAPI, or
 `requests.post(...)`. They must only return `OrderIntent`. The framework will
@@ -361,16 +471,27 @@ reject pull requests that violate this rule.
 ## Development
 
 ```bash
-# Lint + format
-ruff check dogeshtrader tests
-ruff format dogeshtrader tests
-
-# Tests
-pytest
-
-# Tests with coverage
-pytest --cov=dogeshtrader --cov-report=term-missing
+make install   # .venv + editable install with dev extras
+make hooks     # pre-commit: ruff, mypy, and a guard against committing .env/configs
+make check     # what CI runs: lint, mypy, tests with an 80% coverage floor
+make test      # quick test run
+make format    # apply ruff fixes + formatting
 ```
+
+CI (`.github/workflows/ci.yml`) runs `make lint typecheck cov` on Python 3.12
+and 3.13 for every push and pull request.
+
+Conventions:
+
+- Strategies return `OrderIntent` only; they never import brokers or HTTP.
+- New run modes, brokers, or entry points are wired in `runtime.py`; CLI
+  commands stay thin and raise `DogeshTraderError` subclasses, which the CLI
+  turns into a one-line message and exit code 1.
+- Tests build throwaway workspaces with `tests/conftest.py::build_workspace`
+  (real YAML configs plus Parquet candles) and drive the CLI through
+  `typer.testing.CliRunner`. No test touches the network.
+- `tests/test_import_graph.py` imports every module in a fresh interpreter,
+  so circular imports fail CI rather than a user's command.
 
 ## Disclaimer
 

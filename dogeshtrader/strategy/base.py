@@ -9,8 +9,11 @@ turning intents into orders (or rejecting them).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, ClassVar
 
+from pydantic import BaseModel, ValidationError
+
+from dogeshtrader.core.errors import StrategyError
 from dogeshtrader.core.interfaces import IStrategy
 from dogeshtrader.core.models import (
     Candle,
@@ -28,17 +31,29 @@ class Strategy(IStrategy, ABC):
         ``on_start`` -> repeated ``on_candle`` / ``on_tick`` / ``on_order_update``
         -> ``on_end``
 
-    Strategies expose state via instance attributes; the framework persists
-    nothing automatically. If you need cross-run persistence, write to
-    ``ctx.storage``.
+    Set ``Params`` to a pydantic model to validate the YAML ``params`` block
+    when the strategy is built. Unknown or mistyped keys then fail at load
+    time instead of silently falling back to a default mid-session.
     """
 
-    #: Human-readable, snake_case name. Used for registry lookup if subclass
-    #: doesn't override ``__strategy_name__``.
+    #: Human-readable, snake_case name. Set by ``@register``.
     name: str = ""
 
+    #: Optional typed parameter schema.
+    Params: ClassVar[type[BaseModel] | None] = None
+
     def __init__(self, params: dict[str, Any] | None = None) -> None:
-        self.params: dict[str, Any] = params or {}
+        raw = dict(params or {})
+        self.settings: BaseModel | None = None
+        if self.Params is not None:
+            try:
+                self.settings = self.Params(**raw)
+            except ValidationError as e:
+                raise StrategyError(
+                    f"invalid params for {self.name or type(self).__name__}: {e}"
+                ) from e
+            raw = self.settings.model_dump()
+        self.params: dict[str, Any] = raw
 
     # ------------------------------------------------------------------
     # Lifecycle - override as needed.

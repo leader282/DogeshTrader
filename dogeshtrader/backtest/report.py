@@ -259,7 +259,7 @@ def _load_template() -> str:
 
 
 def _to_dict(obj: Any) -> Any:
-    if is_dataclass(obj):
+    if is_dataclass(obj) and not isinstance(obj, type):
         return asdict(obj)
     if hasattr(obj, "model_dump"):
         return obj.model_dump(mode="json")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 from typing import Any
 
 from dogeshtrader.core.errors import BrokerError
@@ -11,9 +12,9 @@ class KiteGTTAdapter:
     def __init__(self, kite: Any) -> None:
         self.kite = kite
 
-    def list(self) -> list[dict[str, Any]]:
+    def list(self) -> builtins.list[dict[str, Any]]:
         try:
-            return list(self.kite.get_gtts() or [])
+            return builtins.list(self.kite.get_gtts() or [])
         except Exception as e:
             raise BrokerError(f"get_gtts failed: {e}") from e
 
@@ -29,9 +30,9 @@ class KiteGTTAdapter:
         trigger_type: str,
         tradingsymbol: str,
         exchange: str,
-        trigger_values: list[float],
+        trigger_values: builtins.list[float],
         last_price: float,
-        orders: list[dict[str, Any]],
+        orders: builtins.list[dict[str, Any]],
     ) -> dict[str, Any]:
         try:
             return dict(
@@ -55,9 +56,9 @@ class KiteGTTAdapter:
         trigger_type: str,
         tradingsymbol: str,
         exchange: str,
-        trigger_values: list[float],
+        trigger_values: builtins.list[float],
         last_price: float,
-        orders: list[dict[str, Any]],
+        orders: builtins.list[dict[str, Any]],
     ) -> dict[str, Any]:
         try:
             return dict(

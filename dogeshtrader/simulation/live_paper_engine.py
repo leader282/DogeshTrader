@@ -27,6 +27,7 @@ from dogeshtrader.brokers.paper_broker import PaperBroker, PaperConfig
 from dogeshtrader.config import AppConfig, RiskConfig, StrategyConfig
 from dogeshtrader.constants import RUN_ID_PREFIX
 from dogeshtrader.core.enums import Mode
+from dogeshtrader.core.interfaces import IBroker
 from dogeshtrader.core.models import (
     Candle,
     Instrument,
@@ -40,7 +41,11 @@ from dogeshtrader.core.models import (
 from dogeshtrader.execution.idempotency import IdempotencyGuard
 from dogeshtrader.execution.order_router import OrderRouter
 from dogeshtrader.execution.rate_limiter import RateLimiter
+from dogeshtrader.execution.reconciliation import position_drifts
 from dogeshtrader.logging_config import get_logger
+from dogeshtrader.operator.state import OperatorBook, RunStatus, publish_run, state_path
+from dogeshtrader.risk.flatten import flatten_intents
+from dogeshtrader.risk.kill_switch import KillSwitch, kill_switch_path
 from dogeshtrader.risk.risk_engine import RiskEngine
 from dogeshtrader.simulation.latency import LatencyModel
 from dogeshtrader.storage import (
@@ -81,6 +86,8 @@ class LivePaperEngine:
         mode: Mode = Mode.PAPER,
         db: Database | None = None,
         latency: LatencyModel | None = None,
+        broker: IBroker | None = None,
+        live_confirmation: bool = False,
     ) -> None:
         self.strategy = strategy
         self.instruments = instruments
@@ -103,7 +110,7 @@ class LivePaperEngine:
         self.audit_repo = AuditRepository(self.db)
 
         # Broker + risk + router
-        self.broker = PaperBroker(
+        self.broker: Any = broker or PaperBroker(
             config=PaperConfig(
                 starting_cash=strategy_cfg.initial_cash,
                 fill_market_on_next_candle_open=False,
@@ -112,10 +119,14 @@ class LivePaperEngine:
                 bps_cost=app_cfg.costs.bps_fallback,
             )
         )
+        self.kill_switch = KillSwitch(kill_switch_path(app_cfg.data_dir))
+        self.operator = OperatorBook(state_path(app_cfg.data_dir))
         self.risk = RiskEngine(
             risk_cfg,
             tag_prefix=app_cfg.order_tag_prefix,
-            enforce_market_hours=False,
+            enforce_market_hours=mode == Mode.LIVE,
+            kill_switch=self.kill_switch,
+            market_interval=strategy_cfg.interval,
         )
         self.router = OrderRouter(
             mode=self.mode,
@@ -126,6 +137,8 @@ class LivePaperEngine:
                 rate_per_sec=app_cfg.order_rate_per_second,
                 burst=app_cfg.order_rate_burst,
             ),
+            live_trading_enabled=app_cfg.live_trading_enabled,
+            live_confirmation=live_confirmation,
         )
 
         self._request_by_intent: dict[str, OrderRequest] = {}
@@ -137,7 +150,11 @@ class LivePaperEngine:
         self._instrument_by_key: dict[str, Instrument] = {i.key: i for i in instruments}
         self._latest_prices: dict[str, float] = {}
         self._positions: dict[str, Position] = {i.key: Position(instrument=i) for i in instruments}
+        self._tracked: dict[str, Position] = {i.key: Position(instrument=i) for i in instruments}
         self._ctx: StrategyContext | None = None
+        self._events_since_reconcile = 0
+        #: Seconds to wait for an event before publishing a heartbeat snapshot.
+        self.poll_seconds = 1.0
 
     def set_broker(self, broker: Any) -> None:
         """Swap broker at runtime and wire callbacks.
@@ -198,15 +215,21 @@ class LivePaperEngine:
             params=self.strategy_cfg.params,
             storage=self.db,
         )
+        if self.mode == Mode.LIVE:
+            self._halt_if_broker_drift()
         self._sync_context_from_broker(ctx, refresh_positions=True)
         self._ctx = ctx
         self.strategy.on_start(ctx)
         processed = 0
 
+        self._publish(ctx, force=True)
         while not self._stop.is_set():
             try:
-                event = self._queue.get(timeout=1.0)
+                event = self._queue.get(timeout=self.poll_seconds)
             except queue.Empty:
+                # Heartbeat: a quiet market still refreshes the snapshot, so a
+                # stale page means the engine stopped, not that no ticks came.
+                self._publish(ctx)
                 continue
             if event.kind == "stop":
                 break
@@ -230,6 +253,7 @@ class LivePaperEngine:
 
         self.run_repo.complete(self.run_id)
         self.audit_repo.log("engine", "paper_completed", run_id=self.run_id)
+        self._publish(ctx, status="stopped", force=True)
 
     # ------------------------------------------------------------------
     # Dispatch
@@ -258,9 +282,15 @@ class LivePaperEngine:
         if hasattr(self.broker, "feed_price"):
             self.broker.feed_price(instrument, tick.ltp, tick.timestamp)
             self._sync_context_from_broker(ctx, refresh_positions=True)
-        intents = self.strategy.on_tick(ctx, tick)
+        self._mark_risk(ctx)
+        self._maybe_reconcile_positions()
+        if self.kill_switch.is_engaged():
+            intents = flatten_intents(ctx)
+        else:
+            intents = self.strategy.on_tick(ctx, tick)
         if intents:
             self._route(intents, ctx)
+        self._publish(ctx)
 
     def _on_candle(self, instrument: Instrument, candle: Candle, ctx: StrategyContext) -> None:
         self._latest_prices[instrument.key] = candle.close
@@ -270,9 +300,16 @@ class LivePaperEngine:
         if hasattr(self.broker, "feed_candle"):
             self.broker.feed_candle(instrument, candle)
             self._sync_context_from_broker(ctx, refresh_positions=True)
-        intents = self.strategy.on_candle(ctx, candle)
+        self.risk.note_candle(instrument.key, candle)
+        self._mark_risk(ctx)
+        self._maybe_reconcile_positions()
+        if self.kill_switch.is_engaged():
+            intents = flatten_intents(ctx)
+        else:
+            intents = self.strategy.on_candle(ctx, candle)
         if intents:
             self._route(intents, ctx)
+        self._publish(ctx)
 
     def _route(self, intents: Iterable[OrderIntent], ctx: StrategyContext) -> None:
         result = self.router.route(intents, ctx)
@@ -349,12 +386,82 @@ class LivePaperEngine:
     def _handle_fill(self, fill: Any) -> None:
         self.fill_repo.add(self.run_id, fill)
         self.risk.on_fill(fill)
+        tracked = self._tracked.setdefault(
+            fill.instrument.key, Position(instrument=fill.instrument)
+        )
+        tracked.apply_fill(fill)
         if self._ctx is not None:
             self._sync_context_from_broker(self._ctx, refresh_positions=True)
 
-    def _sync_context_from_broker(
-        self, ctx: StrategyContext, *, refresh_positions: bool
+    def _mark_risk(self, ctx: StrategyContext) -> None:
+        equity = ctx.cash
+        for key, pos in ctx.positions.items():
+            price = ctx.latest_prices.get(key) or pos.last_price or 0.0
+            equity += pos.quantity * price
+        self._last_equity = equity
+        self.risk.observe_equity(ctx.timestamp, equity)
+        self.risk.update_realised_pnl(sum(pos.realised_pnl for pos in ctx.positions.values()))
+
+    def _publish(
+        self,
+        ctx: StrategyContext,
+        *,
+        status: RunStatus = "running",
+        force: bool = False,
     ) -> None:
+        try:
+            publish_run(
+                self.operator,
+                ctx,
+                run_id=self.run_id,
+                mode=self.mode.value,
+                equity=getattr(self, "_last_equity", ctx.cash),
+                risk=self.risk,
+                kill_switch=self.kill_switch,
+                status=status,
+                force=force,
+            )
+        except Exception as e:
+            _log.warning("operator_snapshot_failed", error=str(e))
+
+    def _maybe_reconcile_positions(self) -> None:
+        if self.mode != Mode.LIVE:
+            return
+        self._events_since_reconcile += 1
+        if self._events_since_reconcile < 20:
+            return
+        self._events_since_reconcile = 0
+        self._halt_if_broker_drift()
+
+    def _halt_if_broker_drift(self) -> None:
+        if not hasattr(self.broker, "positions"):
+            return
+        try:
+            broker_positions = self.broker.positions()
+        except Exception as e:
+            _log.warning("position_reconcile_failed", error=str(e))
+            return
+        drifts = position_drifts(
+            self._tracked,
+            broker_positions,
+            universe=set(self._instrument_by_key),
+        )
+        if not drifts:
+            return
+        detail = "; ".join(
+            f"{item.instrument_key} local={item.local_quantity} broker={item.broker_quantity}"
+            for item in drifts
+        )
+        self.kill_switch.engage(f"unexpected broker position: {detail}")
+        self.risk.breaker.trip("unexpected_position", detail)
+        self.audit_repo.log(
+            "reconcile",
+            "unexpected_position",
+            run_id=self.run_id,
+            payload={"detail": detail},
+        )
+
+    def _sync_context_from_broker(self, ctx: StrategyContext, *, refresh_positions: bool) -> None:
         if hasattr(self.broker, "cash"):
             try:
                 ctx.cash = float(self.broker.cash)

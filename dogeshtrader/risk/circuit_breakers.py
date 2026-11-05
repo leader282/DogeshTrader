@@ -10,13 +10,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Literal, get_args
 
 BreakerName = Literal[
     "max_daily_loss",
     "consecutive_rejections",
     "data_feed_disconnect",
     "session_end",
+    "monthly_loss",
+    "kill_switch",
+    "unexpected_position",
 ]
 
 
@@ -47,13 +50,8 @@ class CircuitBreaker:
     states: dict[BreakerName, BreakerState] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        for n in (
-            "max_daily_loss",
-            "consecutive_rejections",
-            "data_feed_disconnect",
-            "session_end",
-        ):
-            self.states.setdefault(n, BreakerState(name=n))  # type: ignore[arg-type]
+        for n in get_args(BreakerName):
+            self.states.setdefault(n, BreakerState(name=n))
 
     # ------------------------------------------------------------------
     # Event ingestion
@@ -98,6 +96,17 @@ class CircuitBreaker:
 
     def force_session_end(self) -> None:
         self._trip("session_end", "session ended; no new orders")
+
+    def trip(self, name: BreakerName, reason: str) -> None:
+        self._trip(name, reason)
+
+    def clear(self, name: BreakerName) -> None:
+        state = self.states.get(name)
+        if state is None:
+            return
+        state.tripped = False
+        state.reason = ""
+        state.tripped_at = None
 
     # ------------------------------------------------------------------
     # Queries

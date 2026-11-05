@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from dogeshtrader.core.enums import Mode
 from dogeshtrader.core.errors import OrderRejected, RiskRejected
@@ -26,7 +27,9 @@ from dogeshtrader.core.models import (
 from dogeshtrader.execution.idempotency import IdempotencyGuard
 from dogeshtrader.execution.rate_limiter import RateLimiter
 from dogeshtrader.logging_config import get_logger
-from dogeshtrader.risk.risk_engine import RiskEngine
+
+if TYPE_CHECKING:
+    from dogeshtrader.risk.risk_engine import RiskEngine
 
 _log = get_logger(__name__)
 

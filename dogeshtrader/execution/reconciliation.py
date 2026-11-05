@@ -18,7 +18,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from dogeshtrader.core.models import OrderUpdate
+from dogeshtrader.core.models import OrderUpdate, Position
 from dogeshtrader.logging_config import get_logger
 from dogeshtrader.storage import AuditRepository, OrderRepository
 
@@ -31,6 +31,46 @@ class ReconcileItem:
     local: dict[str, Any] | None
     broker: OrderUpdate | None
     delta: dict[str, Any]
+
+
+@dataclass
+class PositionDrift:
+    instrument_key: str
+    local_quantity: int
+    broker_quantity: int
+
+
+def position_drifts(
+    local: dict[str, Position] | dict[str, int],
+    broker: dict[str, Position] | dict[str, int],
+    *,
+    universe: set[str],
+) -> list[PositionDrift]:
+    """Quantity mismatches inside the strategy universe.
+
+    A non-zero broker quantity the run did not open is a halt. Positions
+    outside ``universe`` are left for the operator's other activity.
+    """
+    drifts: list[PositionDrift] = []
+    for key in sorted(universe):
+        local_qty = _quantity(local, key)
+        broker_qty = _quantity(broker, key)
+        if local_qty != broker_qty:
+            drifts.append(
+                PositionDrift(
+                    instrument_key=key,
+                    local_quantity=local_qty,
+                    broker_quantity=broker_qty,
+                )
+            )
+    return drifts
+
+
+def _quantity(book: dict[str, Position] | dict[str, int], key: str) -> int:
+    value = book.get(key, 0)
+    if isinstance(value, int):
+        return value
+    return int(value.quantity)
 
 
 class Reconciliation:
@@ -118,4 +158,4 @@ class Reconciliation:
         return items
 
 
-__all__ = ["ReconcileItem", "Reconciliation"]
+__all__ = ["PositionDrift", "ReconcileItem", "Reconciliation", "position_drifts"]

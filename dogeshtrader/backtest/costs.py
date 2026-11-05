@@ -104,9 +104,14 @@ class IndiaEquitySimpleCostModel:
 
 def build_cost_model(name: str, **kwargs: float) -> CostModel:
     if name == "india_equity_simple":
-        return IndiaEquitySimpleCostModel(**kwargs)  # type: ignore[arg-type]
+        india_kwargs = dict(kwargs)
+        fee_per_order = india_kwargs.pop("fee_per_order", None)
+        india_kwargs.pop("bps", None)
+        if fee_per_order is not None and "brokerage_intraday" not in india_kwargs:
+            india_kwargs["brokerage_intraday"] = fee_per_order
+        return IndiaEquitySimpleCostModel(**india_kwargs)
     if name in ("bps_only", "bps"):
-        return BpsCostModel(**kwargs)  # type: ignore[arg-type]
+        return BpsCostModel(**kwargs)
     raise ValueError(f"unknown cost model: {name}")
 
 

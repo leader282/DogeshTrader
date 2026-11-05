@@ -1,0 +1,33 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.4
+    hooks:
+      - id: ruff-check
+        args: ["--fix"]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: forbid-secrets-and-local-configs
+        name: never commit secrets, configs, or private strategies
+        language: fail
+        entry: "Secrets, configs, and private strategy code must stay out of git."
+        files: '^(\.env$|data/|configs/|tests/test_intraday_signal\.py$|dogeshtrader/strategy/(?!(__init__|base|registry|signals|sample_opening_range|sample_sma_crossover)\.py$).+\.py$)'
+      - id: mypy
+        name: mypy
+        language: system
+        entry: .venv/bin/mypy dogeshtrader
+        pass_filenames: false
+        types: [python]

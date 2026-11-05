@@ -27,10 +27,13 @@ def plot_equity_curve(
 
     if not equity_curve:
         return None
-    xs = [ts for ts, _ in equity_curve]
+    import matplotlib.dates as mdates
+
+    xs = [mdates.date2num(ts) for ts, _ in equity_curve]
     ys = [v for _, v in equity_curve]
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.plot(xs, ys, color="#2563eb", linewidth=1.5)
+    ax.xaxis_date()
     ax.set_title(title)
     ax.set_ylabel("Equity (INR)")
     ax.grid(True, linestyle="--", alpha=0.4)

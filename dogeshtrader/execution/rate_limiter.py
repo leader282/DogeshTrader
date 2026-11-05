@@ -35,7 +35,12 @@ class TokenBucket:
     def _refill(self) -> None:
         now = self.time_fn()
         elapsed = now - self._last
-        if elapsed <= 0:
+        if elapsed < 0:
+            # The time source moved backwards (e.g. a replay clock restarting).
+            # Re-anchor, or the bucket would never refill until it caught up.
+            self._last = now
+            return
+        if elapsed == 0:
             return
         self._tokens = min(float(self.burst), self._tokens + elapsed * self.rate_per_sec)
         self._last = now

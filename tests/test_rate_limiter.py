@@ -25,6 +25,17 @@ def test_token_bucket_refills_with_time() -> None:
     assert not bucket.try_acquire()
 
 
+def test_token_bucket_reanchors_when_time_goes_backwards() -> None:
+    now = [1_000.0]
+    bucket = TokenBucket(rate_per_sec=1.0, burst=1, time_fn=lambda: now[0])
+    assert bucket.try_acquire()
+    assert not bucket.try_acquire()
+    now[0] = 10.0  # the time source restarted earlier, e.g. a replay clock
+    assert not bucket.try_acquire()
+    now[0] = 11.0  # one second after the restart refills one token
+    assert bucket.try_acquire()
+
+
 def test_rate_limiter_blocking_acquires() -> None:
     now = [0.0]
     sleeps: list[float] = []

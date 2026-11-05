@@ -140,7 +140,8 @@ class KiteWebSocketAdapter:
 
 def _to_tick(raw: dict[str, Any]) -> Tick | None:
     token = raw.get("instrument_token")
-    if token is None:
+    ltp = _float_or_none(raw.get("last_price"))
+    if token is None or ltp is None or ltp <= 0:
         return None
     ts = raw.get("exchange_timestamp") or raw.get("timestamp") or datetime.now()
     if isinstance(ts, str):
@@ -168,7 +169,7 @@ def _to_tick(raw: dict[str, Any]) -> Tick | None:
     return Tick(
         timestamp=ts,
         instrument_token=int(token),
-        ltp=float(raw.get("last_price") or 0.0),
+        ltp=ltp,
         last_quantity=_int_or_none(raw.get("last_quantity")),
         volume_traded=_int_or_none(raw.get("volume_traded") or raw.get("volume")),
         average_traded_price=_float_or_none(

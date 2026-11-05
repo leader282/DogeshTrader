@@ -55,18 +55,24 @@ kite_token*.json
 token.json
 access_token*
 
-# Local operator / strategy configuration - commit examples only
-configs/*.yaml
-configs/*.yml
-configs/strategies/*.yaml
-configs/strategies/*.yml
-!configs/*.example.yaml
-!configs/*.example.yml
-!configs/strategies/*.example.yaml
-!configs/strategies/*.example.yml
+# Configuration stays on this machine. Nothing under configs/ is published.
+configs/
+
+# Private strategy implementations. A new strategy file in this package is
+# ignored until it is added to the allowlist below. Samples stay in git.
+dogeshtrader/strategy/*
+!dogeshtrader/strategy/__init__.py
+!dogeshtrader/strategy/base.py
+!dogeshtrader/strategy/registry.py
+!dogeshtrader/strategy/signals.py
+!dogeshtrader/strategy/sample_opening_range.py
+!dogeshtrader/strategy/sample_sma_crossover.py
+
+# Tests that exercise a private strategy.
+tests/test_intraday_signal.py
 
 # Local data and runtime artifacts
-data/
+/data/
 *.sqlite
 *.sqlite3
 *.db

@@ -30,7 +30,7 @@ class BaseBroker(IBroker):
         self._order_update_cbs: list[OrderUpdateCallback] = []
         self._fill_cbs: list[FillCallback] = []
 
-    def on_order_update(self, callback: OrderUpdateCallback) -> None:  # type: ignore[override]
+    def on_order_update(self, callback: OrderUpdateCallback) -> None:
         self._order_update_cbs.append(callback)
 
     def on_fill(self, callback: FillCallback) -> None:
