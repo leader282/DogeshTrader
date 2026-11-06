@@ -325,6 +325,19 @@ reloading and shows:
 It reads `<data_dir>/operator/state.json`, which every run mode writes.
 `GET /api/state` returns the same data as JSON.
 
+## Hosted console
+
+The `DogeshConsole` app (separate repository) shows
+every run, trade, and metric with price charts and executions marked. This
+machine pushes to it over HTTPS; the console never connects back.
+
+```bash
+# DOGESH_CONSOLE_URL and DOGESH_CONSOLE_TOKEN in .env (from `npm run agent:create`)
+dogesh console ping
+dogesh console sync                       # all runs; re-sending overwrites in place
+dogesh console sync --run-id <id>         # one run
+```
+
 ## Writing a new strategy
 
 A strategy is just a Python class that inherits from

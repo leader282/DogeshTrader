@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import typer
 
-from dogeshtrader.cli import auth, data, ops, runs
+from dogeshtrader.cli import auth, cloud, data, ops, runs
 
 app = typer.Typer(
     help="DogeshTrader: local-first algo-trading framework for Zerodha Kite Connect.",
@@ -16,6 +16,7 @@ app = typer.Typer(
     add_completion=False,
 )
 app.add_typer(auth.app, name="auth")
+app.add_typer(cloud.app, name="console")
 app.add_typer(data.instruments_app, name="instruments")
 app.add_typer(data.data_app, name="data")
 for _name, _fn in {**runs.COMMANDS, **ops.COMMANDS}.items():

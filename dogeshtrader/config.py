@@ -87,6 +87,8 @@ class AppSettings(BaseSettings):
     dogeshtrader_env: str = "local"
     dogeshtrader_config: str = "configs/app.example.yaml"
     dogeshtrader_risk_config: str = "configs/risk.example.yaml"
+    dogesh_console_url: str = ""
+    dogesh_console_token: str = ""
 
 
 # ---------------------------------------------------------------------------
